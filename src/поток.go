@@ -28,50 +28,36 @@ var (
 	СледующийХук                = user32.NewProc("CallNextHookEx")
 	SetWindowLong               = user32.NewProc("SetWindowLongW")
 	// SetLayeredWindowAttributes      = user32.NewProc("SetLayeredWindowAttributes")
-	ReleaseCapture = user32.NewProc("ReleaseCapture")
-	SetTextColor   = gdi32.NewProc("SetTextColor")
-	GetLastError   = Kernel32.NewProc("GetLastError")
-	GetCaretPos    = user32.NewProc("GetCaretPos")
-	SendInput      = user32.NewProc("SendInput")
+	ReleaseCapture    = user32.NewProc("ReleaseCapture")
+	SetTextColor      = gdi32.NewProc("SetTextColor")
+	GetLastError      = Kernel32.NewProc("GetLastError")
+	GetCaretPos       = user32.NewProc("GetCaretPos")
+	SendInput         = user32.NewProc("SendInput")
+	AttachThreadInput = user32.NewProc("AttachThreadInput")
 )
 
-type INPUT struct {
-	Type uint32
-	Data [24]byte
-}
+// func вводБуквы(буква string) {
+// 	// Создаем массив для хранения Unicode символов
+// 	руны := []rune(буква)
 
-type KEYBDINPUT struct {
-	WVk         uint16
-	WScan       uint16
-	DwFlags     uint32
-	Time        uint32
-	DwExtraInfo uintptr
-}
+// 	for _, руна := range руны {
+// 		var input INPUT
+// 		input.Type = INPUT_KEYBOARD
+// 		// kb := (*KEYBDINPUT)(unsafe.Pointer(&input.Data[0]))
+// 		kb.WVk = 0
+// 		kb.WScan = uint16(руна) // Используем Unicode символ
+// 		kb.DwFlags = KEYEVENTF_UNICODE
+// 		kb.Time = 0
+// 		kb.DwExtraInfo = 0
 
-const (
-	INPUT_KEYBOARD        = 1
-	KEYEVENTF_EXTENDEDKEY = 0x0001
-	KEYEVENTF_KEYUP       = 0x0002
-	KEYEVENTF_UNICODE     = 0x0004
-	KEYEVENTF_SCANCODE    = 0x0008
-)
+// 		// Нажатие клавиши
+// 		SendInput.Call(1, uintptr(unsafe.Pointer(&input)), unsafe.Sizeof(input))
 
-func вводБуквы(буква string) {
-	var input INPUT
-	input.Type = INPUT_KEYBOARD
-	kb := (*KEYBDINPUT)(unsafe.Pointer(&input.Data[0]))
-	kb.WVk = 0
-	kb.WScan = uint16(буква[0])
-	kb.DwFlags = KEYEVENTF_UNICODE
-	kb.Time = 0
-	kb.DwExtraInfo = 0
-	Инфо(" kb %+v \n", kb)
-
-	SendInput.Call(1, uintptr(unsafe.Pointer(&input)), unsafe.Sizeof(input))
-
-	kb.DwFlags |= KEYEVENTF_KEYUP
-	SendInput.Call(1, uintptr(unsafe.Pointer(&input)), unsafe.Sizeof(input))
-}
+// 		// Отпускание клавиши
+// 		kb.DwFlags |= KEYEVENTF_KEYUP
+// 		SendInput.Call(1, uintptr(unsafe.Pointer(&input)), unsafe.Sizeof(input))
+// 	}
+// }
 
 type СтруктураКлавиатурногоХука struct {
 	ВиртуальныйКод           ВиртуальныйКод
@@ -135,7 +121,7 @@ func main() {
 	runtime.LockOSThread()
 
 	ОсновноеОкноПрограммы = НовоеОкно()
-
+	ТестВывода()
 	// hwnd := Окно.окно.Hwnd()
 	// fmt.Printf("hwnd: %v\n", hwnd)
 	//hwnd.SetLayeredWindowAttributes(0, 255, 0x00000002)
@@ -170,16 +156,16 @@ func main() {
 					0); колВо > 0 {
 					// hwnd := ОсновноеОкноПрограммы.окно.Hwnd()
 					// Инфо("hwnd: %v\n", hwnd)
-					char := string(utf16.Decode(буква[:колВо]))
-
+					буква := string(utf16.Decode(буква[:колВо]))
+					ОсновноеОкноПодсказок.надпись.SetText(fmt.Sprintf("ВиртуальныйКод %v буква %s", ВиртуальныйКод, буква))
 					// ПозицияКаретки := win.GetCaretPos()
 					// Инфо("ПозицияКаретки: %\n", ПозицияКаретки)
 
 					// ПозицияКурсора := win.GetCursorPos()
 					// Инфо("ПозицияКурсора: %\n", ПозицияКурсора)
 
-					Инфо("Код клавиши: 0x%X, Символ: %s\n", ВиртуальныйКод, char)
-					Инфо("структураКлавиатурногоХука.ВиртуальныйКод: %v, Символ: %s\n", структураКлавиатурногоХука.ВиртуальныйКод, char)
+					// Инфо("Код клавиши: 0x%X, Символ: %s\n", ВиртуальныйКод, char)
+					// Инфо("структураКлавиатурногоХука.ВиртуальныйКод: %v, Символ: %s\n", структураКлавиатурногоХука.ВиртуальныйКод, char)
 					// каналОбновленияОкна <- fmt.Sprintf("Код клавиши: 0x%X, Символ: %s", vkCode, char)
 					// Создаем новый статический элемент с введенным символом
 					// дочернееОкно := ui.NewWindowMain(
@@ -191,29 +177,29 @@ func main() {
 					// )
 					// показано := дочернееОкно.Hwnd().ShowWindow(co.SW_SHOW)
 					// Инфо(" %+v \n", показано)
-					var caret win.RECT
-					caret = win.GetCaretPos()
-					Инфо("caret %+v \n", caret)
-					ret, r1, r2 := GetLastError.Call()
-					Инфо("GetLastError %+v  %+v  %+v \n", ret, r1, r2)
+					// var caret win.RECT
+					// caret = win.GetCaretPos()
+					// Инфо("caret %+v \n", caret)
+					// ret, r1, r2 := GetLastError.Call()
+					// Инфо("GetLastError %+v  %+v  %+v \n", ret, r1, r2)
 
-					ОсновноеОкноПодсказок.надпись.SetText(fmt.Sprintf("caret: %v, ", caret))
+					// ОсновноеОкноПодсказок.надпись.SetText(fmt.Sprintf("caret: %v, ", caret))
 
 					// показано = дочернееОкно.Hwnd().UpdateWindow()
 					// Инфо(" %+v \n", показано)
 					// ОсновноеОкноПодсказок.надпись.SetText(fmt.Sprintf("Код клавиши: 0x%X, Символ: %s", ВиртуальныйКод, char))
-					ОсновноеОкноПрограммы.надпись.SetText(fmt.Sprintf("Код клавиши: 0x%X, Символ: %s", ВиртуальныйКод, char))
-					for _, кнопка := range Клавиатура {
-						if кнопка.код == ВиртуальныйКод {
-							// Получаем две буквы для ввода
-							буквы := кнопка.буквы["ру"]
-							if len(буквы) >= 2 {
-								вводБуквы(буквы[0])
-								вводБуквы(буквы[1])
-							}
-							break
-						}
-					}
+					// ОсновноеОкноПрограммы.надпись.SetText(fmt.Sprintf("Код клавиши: 0x%X, Символ: %s", ВиртуальныйКод, char))
+					// for _, кнопка := range Клавиатура {
+					// 	if кнопка.код == ВиртуальныйКод {
+					// 		// Получаем две буквы для ввода
+					// 		буквы := кнопка.буквы["ру"]
+					// 		if len(буквы) >= 2 {
+					// 			вводБуквы(буквы[0])
+					// 			вводБуквы(буквы[1])
+					// 		}
+					// 		break
+					// 	}
+					// }
 
 				} else {
 					Инфо("Код клавиши: 0x%X\n", ВиртуальныйКод)
@@ -247,42 +233,23 @@ func main() {
 	// 	return ret
 	// }, 0, 0)
 
-	// Добавляем обработчик клавиатуры
 	win.SetWindowsHookEx(co.WH_KEYBOARD_LL, func(code int32, wp win.WPARAM, lp win.LPARAM) uintptr {
 		if code >= 0 && wp == win.WPARAM(co.WM_KEYDOWN) {
-			// обработчикАктивногоОкна := win.GetForegroundWindow()
-			// Инфо("обработчикАктивногоОкна %+v \n", обработчикАктивногоОкна)
-			// обработчикФокуса := win.GetFocus()
-			// Инфо("обработчикФокуса %+v \n", обработчикФокуса)
-
-			// var caret win.RECT
-			// caret = win.GetCaretPos()
-			// Инфо("caret %+v \n", caret)
-			// ret, r1, r2 := GetLastError.Call()
-			// Инфо("GetLastError %+v  %+v  %+v \n", ret, r1, r2)
-
-			// var caret1 win.POINT
-			// ret1, r11, r21 := GetCaretPos.Call(uintptr(unsafe.Pointer(&caret1)))
-			// Инфо("GetLastError %+v  %+v  %+v \n", ret1, r11, r21)
-			// Инфо("caret1 %+v \n", caret1)
-
-			// // Инфо("caretPos %+v %+v %+v \n", caretPos, r1, r2)
-			// ret, r1, r2 = GetLastError.Call()
-			// Инфо("GetLastError %+v  %+v  %+v%+v  %+v  %+v\n", ret, r1, r2)
-
-			// коорд := GetCaretPosSys()
-			// Инфо(" %+v \n", коорд)
-
-			// var caretPos win.POINT
-			// ОсновноеОкноПодсказок.надпись.SetText(fmt.Sprintf("caret: %v, ", caret))
-			// обработчикФокуса.ClientToScreenPt(&caretPos)
-
-			// Инфо("caretPos %+v \n", caretPos)
-
 			структураКлавиатуры := (*СтруктураКлавиатурногоХука)(unsafe.Pointer(lp))
-			Инфо("структураКлавиатуры %+v \n", структураКлавиатуры)
-			каналОбновленияОкна <- *структураКлавиатуры
 
+			for _, кнопка := range Клавиатура {
+				if кнопка.код == структураКлавиатуры.ВиртуальныйКод {
+					// Получаем буквы для текущего языка
+					if буквы, есть := кнопка.буквы["ру"]; есть {
+						// Эмулируем ввод каждой буквы в активное окно 
+						for _, буква := range буквы {
+							Инфо("буква %v", буква)
+							вводБуквыВАктивноеОкно(буква)
+						}
+					}
+					break
+				}
+			}
 		}
 		ret, _, _ := СледующийХук.Call(0, uintptr(code), uintptr(wp), uintptr(lp))
 		return ret
@@ -325,6 +292,241 @@ type RECT struct {
 	Left, Top, Right, Bottom int32
 }
 
+func ПрисоединитьПотоки(текущийПоток, целевойПоток uint32, присоединить bool) bool {
+	присоединитьЗначение := 0
+	if присоединить {
+		присоединитьЗначение = 1
+	}
+
+	ret, ret2, err := AttachThreadInput.Call(
+		uintptr(текущийПоток),
+		uintptr(целевойПоток),
+		uintptr(присоединитьЗначение),
+	)
+	Инфо("ПрисоединитьПотоки %+v  %+v  %+v \n", ret, ret2, err)
+
+	return ret != 0
+}
+
+func ПолучитьАктивноеОкноИКаретку() (win.HWND, win.RECT) {
+	// Получаем хендл активного окна
+	активноеОкно := win.GetForegroundWindow()
+
+	// Получаем ID потока активного окна
+	_, активныйПоток := активноеОкно.GetWindowThreadProcessId()
+
+	// Получаем ID текущего потока
+	текущийПоток := win.GetCurrentThreadId()
+
+	// Присоединяемся к потоку активного окна для получения информации о каретке
+	ПрисоединитьПотоки(текущийПоток, активныйПоток, true)
+	defer ПрисоединитьПотоки(текущийПоток, активныйПоток, false)
+
+	// Получаем позицию каретки
+	// var позицияКаретки win.RECT
+	позицияКаретки := win.GetCaretPos()
+	Инфо("1 позицияКаретки %v активноеОкно %v", позицияКаретки, активноеОкно)
+	// Преобразуем координаты каретки в экранные координаты
+	активноеОкно.ClientToScreenRc(&позицияКаретки)
+	Инфо("2 позицияКаретки %v активноеОкно %v", позицияКаретки, активноеОкно)
+	return активноеОкно, позицияКаретки
+}
+
+type INPUT struct {
+	Type uint32
+	Ki   KEYBDINPUT
+}
+
+// type INPUT struct {
+// 	Type uint32
+// 	Data []byte // Размер структуры INPUT на 64-битной системе
+// }
+
+type KEYBDINPUT struct {
+	WVk         uint16
+	WScan       uint16
+	DwFlags     uint32
+	Time        uint32
+	DwExtraInfo uintptr
+	Unused      [8]byte
+}
+
+const (
+	INPUT_KEYBOARD        = 1
+	KEYEVENTF_EXTENDEDKEY = 0x0001
+	KEYEVENTF_KEYUP       = 0x0002
+	KEYEVENTF_UNICODE     = 0x0004
+	KEYEVENTF_SCANCODE    = 0x0008
+	VK_LWIN               = 0x5B // Виртуальный код клавиши "Windows"
+
+)
+
+// func ShowDesktop() {
+// 	// Создаём массив из 4 структур INPUT
+// 	inputs := make([]INPUT, 4)
+
+// 	// Нажатие клавиши "Windows"
+// 	inputs[0].Type = INPUT_KEYBOARD
+// 	kbPressWin := (*KEYBDINPUT)(unsafe.Pointer(&inputs[0].Data[0]))
+// 	kbPressWin.WVk = VK_LWIN
+
+// 	// Нажатие клавиши "D"
+// 	inputs[1].Type = INPUT_KEYBOARD
+// 	kbPressD := (*KEYBDINPUT)(unsafe.Pointer(&inputs[1].Data[0]))
+// 	kbPressD.WVk = 'D'
+
+// 	// Отпускание клавиши "D"
+// 	inputs[2].Type = INPUT_KEYBOARD
+// 	kbReleaseD := (*KEYBDINPUT)(unsafe.Pointer(&inputs[2].Data[0]))
+// 	kbReleaseD.WVk = 'D'
+// 	kbReleaseD.DwFlags = KEYEVENTF_KEYUP
+
+// 	// Отпускание клавиши "Windows"
+// 	inputs[3].Type = INPUT_KEYBOARD
+// 	kbReleaseWin := (*KEYBDINPUT)(unsafe.Pointer(&inputs[3].Data[0]))
+// 	kbReleaseWin.WVk = VK_LWIN
+// 	kbReleaseWin.DwFlags = KEYEVENTF_KEYUP
+
+// 	// Вызываем SendInput для отправки всех событий
+// 	r1, r2, err := SendInput.Call(
+// 		uintptr(len(inputs)),             // Количество структур в массиве
+// 		uintptr(unsafe.Pointer(&inputs)), // Указатель на массив структур
+// 		uintptr(unsafe.Sizeof(inputs)),   // Размер одной структуры INPUT
+// 	)
+// 	Инфо(" ShowDesktop%+v %+v %+v \n", r1, r2, err)
+
+// 	if r1 != uintptr(len(inputs)) {
+// 		ВыводОшибки("SendInput failed: %м", err)
+// 	}
+// }
+
+// func  ShowDesktop() {
+//     // OutputString(L"Sending 'Win-D'\r\n");
+//     INPUT inputs[4] = {};
+//     ZeroMemory(inputs, sizeof(inputs));
+
+//     inputs[0].type = INPUT_KEYBOARD;
+//     inputs[0].ki.wVk = VK_LWIN;
+
+//     inputs[1].type = INPUT_KEYBOARD;
+//     inputs[1].ki.wVk = 'D';
+
+//     inputs[2].type = INPUT_KEYBOARD;
+//     inputs[2].ki.wVk = 'D';
+//     inputs[2].ki.dwFlags = KEYEVENTF_KEYUP;
+
+//     inputs[3].type = INPUT_KEYBOARD;
+//     inputs[3].ki.wVk = VK_LWIN;
+//     inputs[3].ki.dwFlags = KEYEVENTF_KEYUP;
+
+//     UINT uSent = SendInput(ARRAYSIZE(inputs), inputs, sizeof(INPUT));
+//     if (uSent != ARRAYSIZE(inputs))
+//     {
+//         OutputString(L"SendInput failed: 0x%x\n", HRESULT_FROM_WIN32(GetLastError()));
+//     }
+// }
+
+func ТестВывода() {
+
+	inputs := make([]INPUT, 4)
+
+	inputs[0].Type = INPUT_KEYBOARD
+	inputs[0].Ki = KEYBDINPUT{
+		WVk: VK_LWIN,
+	}
+
+	inputs[1].Type = INPUT_KEYBOARD
+	inputs[1].Ki = KEYBDINPUT{
+		WVk: 'D',
+		// WScan:       uint16(руна),
+		// DwFlags:     KEYEVENTF_UNICODE,
+		// Time:        0,
+		// DwExtraInfo: 0,
+	}
+	inputs[2].Type = INPUT_KEYBOARD
+	inputs[2].Ki = KEYBDINPUT{
+		WVk: 'D',
+		// WScan:       uint16(руна),
+		DwFlags: KEYEVENTF_KEYUP,
+		// Time:        0,
+		// DwExtraInfo: 0,
+	}
+	inputs[3].Type = INPUT_KEYBOARD
+	inputs[3].Ki = KEYBDINPUT{
+		WVk: VK_LWIN,
+		// WScan:       uint16(руна),
+		DwFlags: KEYEVENTF_KEYUP,
+		// Time:        0,
+		// DwExtraInfo: 0,
+	}
+
+	рез, рез2, ош := SendInput.Call(
+		uintptr(len(inputs)),
+		uintptr(unsafe.Pointer(&inputs)),
+		unsafe.Sizeof(inputs[0]),
+	)
+	Инфо(" %+v %+v %+v \n", len(inputs), inputs, int32(unsafe.Sizeof(inputs[0])))
+
+	Инфо(" %+v  %+v  %+v \n", рез, рез2, ош)
+
+}
+
+func вводБуквыВАктивноеОкно(буква string) {
+
+	// активноеОкно, _ := ПолучитьАктивноеОкноИКаретку()
+	// Инфо("вводБуквыВАктивноеОкно %v", активноеОкно)
+
+	// if !активноеОкно.IsWindow() || !активноеОкно.IsWindowVisible() {
+	// 	return
+	// }
+
+	букваДляВывода := utf16.Encode([]rune(буква))
+	Инфо("букваДляВывода %+v \n", букваДляВывода)
+
+	inputs := make([]INPUT, 0, len(букваДляВывода))
+
+	for _, руна := range букваДляВывода {
+		Инфо("руна %v", руна)
+
+		// Заполняем структуру правильно
+		inputs = append(inputs, INPUT{
+			Type: INPUT_KEYBOARD,
+			Ki: KEYBDINPUT{
+				//WVk:         uint16(руна),
+				WScan:   uint16(руна),
+				DwFlags: KEYEVENTF_UNICODE,
+
+				// DwExtraInfo: 0,
+			}})
+
+		// Фокусируем окно перед вводом
+		// установленоАктивноеОкно := активноеОкно.SetForegroundWindow()
+		// Инфо("установленоАктивноеОкно %v", установленоАктивноеОкно)
+
+		// Нажатие клавиши ds
+		рез, _, ош := SendInput.Call(
+			uintptr(uint32(len(inputs))),
+			uintptr(unsafe.Pointer(&inputs[0])),
+			uintptr(int32(unsafe.Sizeof(inputs[0]))), // Важно: передаем размер INPUT, а не inputs[0]
+		)
+
+		if рез == 0 {
+			errorCode, e, lastcode := GetLastError.Call()
+			ВыводОшибки("Ошибка SendInput (нажатие): код=%v e= %v lastcode=%v", errorCode, e, lastcode.Error())
+			ВыводОшибки("Ошибка ош=%v", ош.Error())
+
+			Инфо("Параметры SendInput:")
+			Инфо("  Количество inputs: %d", len(inputs))
+			Инфо("  Указатель на inputs: %v", unsafe.Pointer(&inputs))
+			Инфо("  Размер структуры INPUT: %d", unsafe.Sizeof(INPUT{}))
+			Инфо("  Размер inputs: %d", unsafe.Sizeof(inputs))
+			Инфо("  Type: %d", inputs[0].Type)
+			Инфо("  WScan: %d", inputs[0].Ki.WScan)
+			Инфо("  DwFlags: %d", inputs[0].Ki.DwFlags)
+
+		}
+	}
+}
 func GetCaretPosSys() RECT {
 	var rc RECT
 	ret, r1, err := syscall.SyscallN(GetCaretPos.Addr(),
@@ -606,7 +808,7 @@ func НоваяСетка(окно ui.WindowMain, строки, столбцы i
 }
 
 func (сетка *Сетка) ДобавитьКонтейнер(контейнерЭлементов *КонтейнерЭлементов) {
-	Инфо("ДобавитьКонтейнер %+v  %+v \n", сетка.контейнеры, контейнерЭлементов)
+	// Инфо("ДобавитьКонтейнер %+v  %+v \n", сетка.контейнеры, контейнерЭлементов)
 
 	сетка.контейнеры = append(сетка.контейнеры, контейнерЭлементов)
 }
@@ -616,23 +818,23 @@ func (КонтейнерЭлементов *КонтейнерЭлементов
 	return КонтейнерЭлементов
 }
 func (сетка *Сетка) Разместить() {
-	Инфо(" Разместить %+v \n", сетка)
+	// Инфо(" Разместить %+v \n", сетка)
 
 	размерыОкна := ОсновноеОкноПрограммы.окно.Hwnd().GetClientRect()
 	ширинаОкна := размерыОкна.Right - размерыОкна.Left
 	высотаОкна := размерыОкна.Bottom - размерыОкна.Top
 
 	текущаяПоложениеСВерху := сетка.отступ.верхний
-	Инфо("размерыОкна %v ширинаОкна %v высотаОкна %v текущаяПоложениеСВерху %v \n", размерыОкна, ширинаОкна, высотаОкна, текущаяПоложениеСВерху)
-	Инфо(" len(сетка.контейнеры) %+v \n", len(сетка.контейнеры))
+	// Инфо("размерыОкна %v ширинаОкна %v высотаОкна %v текущаяПоложениеСВерху %v \n", размерыОкна, ширинаОкна, высотаОкна, текущаяПоложениеСВерху)
+	// Инфо(" len(сетка.контейнеры) %+v \n", len(сетка.контейнеры))
 
-	for номерКОнтейнера, контейнер := range сетка.контейнеры {
-		Инфо("номерКОнтейнера  %+v контейнер %+v \n", номерКОнтейнера, контейнер)
+	for _, контейнер := range сетка.контейнеры {
+		// Инфо("номерКОнтейнера  %+v контейнер %+v \n", номерКОнтейнера, контейнер)
 
 		ширинаЭлемента := (ширинаОкна - контейнер.отступ.левый - контейнер.отступ.правый) / контейнер.столбцы
 		высотаЭлемента := (высотаОкна - контейнер.отступ.верхний - контейнер.отступ.нижний) / контейнер.строки
 
-		Инфо(" 1 высотаЭлемента  %+v ширинаЭлемента %+v \n", высотаЭлемента, ширинаЭлемента)
+		// Инфо(" 1 высотаЭлемента  %+v ширинаЭлемента %+v \n", высотаЭлемента, ширинаЭлемента)
 
 		for i, элемент := range контейнер.элементы {
 			эл := *элемент
@@ -649,13 +851,13 @@ func (сетка *Сетка) Разместить() {
 			ширинаЭлемента = размерыЭлемента.Right - размерыЭлемента.Left
 			высотаЭлемента = размерыЭлемента.Bottom - размерыЭлемента.Top
 
-			Инфо("2 высотаЭлемента  %+v ширинаЭлемента %+v \n", высотаЭлемента, ширинаЭлемента)
+			// Инфо("2 высотаЭлемента  %+v ширинаЭлемента %+v \n", высотаЭлемента, ширинаЭлемента)
 
 			if ширинаЭлемента == 0 || высотаЭлемента == 0 {
 				ширинаЭлемента = (ширинаОкна - контейнер.отступ.левый - контейнер.отступ.правый) / контейнер.столбцы
 				высотаЭлемента = (ВысотаСвободноОбласти - контейнер.отступ.верхний - контейнер.отступ.нижний) / контейнер.строки
 			}
-			Инфо("высотаЭлемента  %+v ширинаЭлемента %+v \n", высотаЭлемента, ширинаЭлемента)
+			// Инфо("высотаЭлемента  %+v ширинаЭлемента %+v \n", высотаЭлемента, ширинаЭлемента)
 			// Применяем распределение, если оно задано
 			if контейнер.распределение > 0 {
 				switch контейнер.распределение {
@@ -685,7 +887,7 @@ func (сетка *Сетка) Разместить() {
 			}
 
 			// Отладочная информация
-			Инфо("Элемент %d: x=%d, y=%d, ширинаЭлемента=%d, высотаЭлемента=%d текущаяПоложениеСВерхуОтВерхаОкна=%d  \n", i, x, y, ширинаЭлемента, высотаЭлемента, текущаяПоложениеСВерху)
+			// Инфо("Элемент %d: x=%d, y=%d, ширинаЭлемента=%d, высотаЭлемента=%d текущаяПоложениеСВерхуОтВерхаОкна=%d  \n", i, x, y, ширинаЭлемента, высотаЭлемента, текущаяПоложениеСВерху)
 
 			эл.Hwnd().MoveWindow(x, y, ширинаЭлемента, высотаЭлемента, true)
 		}
