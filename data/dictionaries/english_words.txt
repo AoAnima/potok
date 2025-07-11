@@ -1,0 +1,15 @@
+AiCopilot-Code начало
+# English dictionary
+hello
+world
+keyboard
+prediction
+word
+test
+program
+window
+button
+language
+russian
+english
+AiCopilot-Code конец
