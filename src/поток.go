@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 	"runtime"
 	"sort"
 	"strings"
@@ -43,6 +44,7 @@ var (
 	GetGUIThreadInfo         = user32.NewProc("GetGUIThreadInfo")
 	GetForegroundWindow      = user32.NewProc("GetForegroundWindow")
 	GetWindowThreadProcessId = user32.NewProc("GetWindowThreadProcessId")
+	CallWindowProc           = user32.NewProc("CallWindowProcW")
 )
 
 type ДКУ win.HDC // ДескрипторКонтекстаУстройства
@@ -104,11 +106,9 @@ type ПраймОкно struct {
 }
 
 type ОкноПодсказок struct {
-	окно            ui.WindowMain
-	надпись         ui.Static
-	статик          map[string]ui.Static
-	состояниеКнопок map[ВиртуальныйКод]bool // Добавляем поле для хранения состояния кнопок
-	сетка           Сетка
+	hwnd   win.HWND
+	дети   []win.HWND
+	тексты []string
 }
 
 type INPUT struct {
@@ -138,7 +138,21 @@ const (
 	KEYEVENTF_SCANCODE    = 0x0008
 	VK_LWIN               = 0x5B // Виртуальный код клавиши "Windows"
 
+	WM_UPDATE_PREDICTIONS = 0x8000 // WM_APP
 )
+
+var оригинальнаяПроцедураГлавногоОкна uintptr
+
+func новаяПроцедураГлавногоОкна(hwnd win.HWND, msg uint32, wParam win.WPARAM, lParam win.LPARAM) uintptr {
+	if msg == WM_UPDATE_PREDICTIONS {
+		if ОсновноеОкноПодсказок != nil {
+			ОсновноеОкноПодсказок.ОбновитьПредсказания(ТекущиеПредсказания, ВыбранноеПредсказаниеИндекс)
+		}
+		return 0
+	}
+	ret, _, _ := CallWindowProc.Call(оригинальнаяПроцедураГлавногоОкна, uintptr(hwnd), uintptr(msg), uintptr(wParam), uintptr(lParam))
+	return ret
+}
 
 var Алвафит = map[ВиртуальныйКод]Кнопка{
 
@@ -190,8 +204,14 @@ var Словари *СловариСлов               // AiCopilot-Code на�
 var КэшЧастотности *КэшЧастотностиСлов // AiCopilot-Code начало: Глобальная переменная для кэша частотности
 var ТекущиеПредсказания []string       // AiCopilot-Code начало: Хранение текущих предсказаний
 var ВыбранноеПредсказаниеИндекс int    // AiCopilot-Code начало: Индекс выбранного предсказания
+var путьКДанным = "data"
+var HWNDГлавногоОкна win.HWND // HWND главного окна (устанавливается после создания)
 
 func main() {
+	exe, err := os.Executable()
+	if err == nil {
+		путьКДанным = filepath.Join(filepath.Dir(exe), "..", "data")
+	}
 	go func() {
 		log.Println(http.ListenAndServe("localhost:6060", nil))
 	}()
@@ -199,14 +219,14 @@ func main() {
 	ХукКлавиатуры()
 	// AiCopilot-Code начало: Инициализация словарей и кэша частотности
 	Словари = НовыеСловариСлов()
-	статусЗагрузкиСловарей := Словари.ЗагрузитьСловари("potok/data/dictionaries/russian_words.txt", "potok/data/dictionaries/english_words.txt")
+	статусЗагрузкиСловарей := Словари.ЗагрузитьСловари(filepath.Join(путьКДанным, "dictionaries", "russian_words.txt"), filepath.Join(путьКДанным, "dictionaries", "english_words.txt"))
 	if статусЗагрузкиСловарей.Код != QErrors.Ок {
 		ВыводОшибки("Ошибка загрузки словарей: %s", статусЗагрузкиСловарей.Текст)
 		//return
 	}
 
 	КэшЧастотности = НовыиКэшЧастотностиСлов()
-	статусЗагрузкиКэша := КэшЧастотности.ЗагрузитьКэш("potok/data/frequency_cache.json")
+	статусЗагрузкиКэша := КэшЧастотности.ЗагрузитьКэш(filepath.Join(путьКДанным, "frequency_cache.json"))
 	if статусЗагрузкиКэша.Код != QErrors.Ок {
 		ВыводОшибки("Ошибка загрузки кэша частотности: %s", статусЗагрузкиКэша.Текст)
 		// Продолжаем работу, так как отсутствие кэша не критично
@@ -215,16 +235,11 @@ func main() {
 
 	ОсновноеОкноПрограммы = НовоеОкно()
 
+	// AiCopilot-Code начало: Создаём окно подсказок через сырой Win32 на основном потоке
+	НовоеОкноПодсказок()
+
 	// Горутина для обновления UI
 	go ПотокОбновленияЮИ()
-
-	go func() {
-		НовоеОкноПодсказок()
-
-		дескриптор := ОсновноеОкноПодсказок.окно.RunAsMain()
-		Инфо("дескриптор %+v \n", дескриптор)
-
-	}()
 
 	// AiCopilot-Code начало: Запуск горутины для предсказания слов
 	go ПредсказаниеСлов()
@@ -235,7 +250,7 @@ func main() {
 
 	close(каналОбновленияОкна)
 	// AiCopilot-Code начало: Сохранение кэша частотности при завершении
-	статусСохраненияКэша := КэшЧастотности.СохранитьКэш("potok/data/frequency_cache.json")
+	статусСохраненияКэша := КэшЧастотности.СохранитьКэш(filepath.Join(путьКДанным, "frequency_cache.json"))
 	if статусСохраненияКэша.Код != QErrors.Ок {
 		ВыводОшибки("Ошибка сохранения кэша частотности: %s", статусСохраненияКэша.Текст)
 	}
@@ -254,17 +269,21 @@ func ХукКлавиатуры() {
 			структураКлавиатуры := (*СтруктураКлавиатурногоХука)(unsafe.Pointer(структураКлавишы))
 			// Инфо("структураКлавиатуры %+v \n", структураКлавиатуры)
 
+			// События, сгенерированные потоком (Backspace/text): пропускаем в окно, не перехватываем
+			if структураКлавиатуры.ДополнительнаяИнформация == УказательНаПоток {
+				Инфо(" структураКлавиатуры.ДополнительнаяИнформация %+v \n", структураКлавиатуры.ДополнительнаяИнформация)
+				ret, _, _ := СледующийХук.Call(0, uintptr(код), uintptr(типСобытия), uintptr(структураКлавишы))
+				return ret
+			}
+
 			каналОбновленияОкна <- ДанныеКлавиатурногоСобытия{
 				*структураКлавиатуры,
 				типСобытия,
 			}
 			// Инфо(" структураКлавиатуры %+v  типСобытия %+v \n", структураКлавиатуры, типСобытия)
 
-			if структураКлавиатуры.ДополнительнаяИнформация == УказательНаПоток { // пока == , тоесть обрабатываем все собатиыя, нужно заменить на != чтобы передавались только события программы
-				// если в дополнительнойинформации событие данных о том что событие было сгенерировано програмое которе равно УказательНаПоток то вывод на экран символа не долэен производится иначе если событие сгенерировано программой и имеет УказательНаПоток то выводим на экран
-
-				Инфо(" структураКлавиатуры.ДополнительнаяИнформация %+v \n", структураКлавиатуры.ДополнительнаяИнформация)
-				// ret, _, _ := СледующийХук.Call(0, uintptr(code), uintptr(wp), uintptr(lp))
+			// Блокируем пробел от попадания в активное окно, если есть предсказания
+			if структураКлавиатуры.ВиртуальныйКод == 0x20 && len(ТекущиеПредсказания) > 0 {
 				return 1
 			}
 			// }
@@ -291,9 +310,6 @@ func ПотокОбновленияЮИ() {
 			// Инфо("буква [2]uint16 %+v \n", буква)
 
 			// буква := string(utf16.Decode(буква[:колВо]))
-			ОсновноеОкноПодсказок.надпись.SetText(fmt.Sprintf("ВиртуальныйКод %v ", СобытиеКлавиатуры.ВиртуальныйКод))
-			// ОсновноеОкноПодсказок.надпись.SetText(fmt.Sprintf("ВиртуальныйКод %v буква %s", СобытиеКлавиатуры.ВиртуальныйКод, буква))
-
 			ОсновноеОкноПрограммы.надпись.SetText(fmt.Sprintf("Код клавиши: 0x%X", СобытиеКлавиатуры.ВиртуальныйКод))
 			БуферНажатий(&СобытиеКлавиатуры)
 			// ПечатьТекста(буква)
@@ -357,7 +373,7 @@ func БуферНажатий(СобытиеКлавиатуры *ДанныеК
 	// var состояниеКлавишы [256]byte
 	// ИнфоБФ("СобытиеКлавиатуры %+v \n", СобытиеКлавиатуры)
 	// ПолучитьСостояниеКлавиатуры.Call(uintptr(unsafe.Pointer(&состояниеКлавишы)))
-	// ИнфоБФ("состояниеКлавишы %+v \n", состояниеКлавишы)
+	// ИнфоБФ("состояниеКлавишы %+v \n", состояниеКлавишы)ВАЙЦ
 	// ЗажатМодификатор := win.GetAsyncKeyState(co.VK_SPACE)
 	// Инфо("ЗажатМодификатор %+v \n", ЗажатМодификатор)
 
@@ -379,7 +395,6 @@ func БуферНажатий(СобытиеКлавиатуры *ДанныеК
 			// Инфо("ЗажатМодификатор VK_SHIFT %+v \n", ВиртуальныйКод(ЗажатМодификатор))
 
 		case co.VK_LCONTROL:
-
 			// Инфо("ЗажатМодификатор VK_LCONTROL %+v \n", ВиртуальныйКод(ЗажатМодификатор))
 
 		default:
@@ -419,14 +434,18 @@ func БуферНажатий(СобытиеКлавиатуры *ДанныеК
 			Буфер.ТекущееСлово = []ВиртуальныйКод{}
 			ТекущиеПредсказания = []string{}
 			ВыбранноеПредсказаниеИндекс = 0
-			ОсновноеОкноПодсказок.ОбновитьПредсказания(ТекущиеПредсказания, ВыбранноеПредсказаниеИндекс) // Очищаем окно подсказок
+			if HWNDГлавногоОкна != 0 {
+				HWNDГлавногоОкна.SendMessage(WM_UPDATE_PREDICTIONS, 0, 0)
+			}
 		case co.VK_UP: // AiCopilot-Code начало: Обработка стрелки вверх
 			if len(ТекущиеПредсказания) > 0 {
 				ВыбранноеПредсказаниеИндекс--
 				if ВыбранноеПредсказаниеИндекс < 0 {
 					ВыбранноеПредсказаниеИндекс = len(ТекущиеПредсказания) - 1
 				}
-				ОсновноеОкноПодсказок.ОбновитьПредсказания(ТекущиеПредсказания, ВыбранноеПредсказаниеИндекс)
+				if HWNDГлавногоОкна != 0 {
+					HWNDГлавногоОкна.SendMessage(WM_UPDATE_PREDICTIONS, 0, 0)
+				}
 			}
 		case co.VK_DOWN: // AiCopilot-Code начало: Обработка стрелки вниз
 			if len(ТекущиеПредсказания) > 0 {
@@ -434,7 +453,9 @@ func БуферНажатий(СобытиеКлавиатуры *ДанныеК
 				if ВыбранноеПредсказаниеИндекс >= len(ТекущиеПредсказания) {
 					ВыбранноеПредсказаниеИндекс = 0
 				}
-				ОсновноеОкноПодсказок.ОбновитьПредсказания(ТекущиеПредсказания, ВыбранноеПредсказаниеИндекс)
+				if HWNDГлавногоОкна != 0 {
+					HWNDГлавногоОкна.SendMessage(WM_UPDATE_PREDICTIONS, 0, 0)
+				}
 			}
 		case co.VK_BACK: // AiCopilot-Code начало: Обработка Backspace
 			if len(Буфер.ТекущееСлово) > 0 {
@@ -444,18 +465,17 @@ func БуферНажатий(СобытиеКлавиатуры *ДанныеК
 				// Если буфер пуст, очищаем предсказания
 				ТекущиеПредсказания = []string{}
 				ВыбранноеПредсказаниеИндекс = 0
-				ОсновноеОкноПодсказок.ОбновитьПредсказания(ТекущиеПредсказания, ВыбранноеПредсказаниеИндекс)
+				if HWNDГлавногоОкна != 0 {
+					HWNDГлавногоОкна.SendMessage(WM_UPDATE_PREDICTIONS, 0, 0)
+				}
 			}
 		case co.VK_SHIFT, co.VK_LSHIFT, co.VK_RSHIFT, co.VK_CONTROL, co.VK_LCONTROL, co.VK_RCONTROL, co.VK_MENU, co.VK_LMENU, co.VK_RMENU: // AiCopilot-Code начало: Игнорируем клавиши-модификаторы
 			// Игнорируем клавиши-модификаторы при добавлении в буфер
 			Инфо("Игнорируем клавишу-модификатор: 0x%X", СобытиеКлавиатуры.ВиртуальныйКод)
 		default: // AiCopilot-Code конец: Обработка остальных клавиш
 			// AiCopilot-Code начало
-			// Если буфер был пуст, значит, это начало ввода нового слова.
-			// Перемещаем окна к текущей позиции курсора.
-			if len(Буфер.ТекущееСлово) == 0 {
-				ПереместитьОкнаКурсору()
-			}
+			// Перемещаем окна к позиции курсора при каждом нажатии
+			ПереместитьОкнаКурсору()
 			// AiCopilot-Code конец
 			Инфо("ЗажатМодификатор 2%+v \n", ВиртуальныйКод(ЗажатМодификатор))
 			Инфо("СобытиеКлавиатуры.ВиртуальныйКод %+v \n", СобытиеКлавиатуры.ВиртуальныйКод)
@@ -469,7 +489,9 @@ func БуферНажатий(СобытиеКлавиатуры *ДанныеК
 func ПредсказаниеСлов() {
 	for коды := range каналПредсказания {
 		ТекущиеПредсказания = ПредсказатьСлова(коды)
-		ОсновноеОкноПодсказок.ОбновитьПредсказания(ТекущиеПредсказания, ВыбранноеПредсказаниеИндекс)
+		if HWNDГлавногоОкна != 0 {
+			HWNDГлавногоОкна.PostMessage(WM_UPDATE_PREDICTIONS, 0, 0)
+		}
 	}
 }
 
@@ -505,10 +527,16 @@ func ПредсказатьСлова(коды []ВиртуальныйКод) [
 		возможныеПрефиксы = новыеПрефиксы
 	}
 
+	const максПредсказаний = 20
 	предсказанныеСлова := []string{}
+	виденные := make(map[string]bool)
 	for _, префикс := range возможныеПрефиксы {
-		if Словари.ЯвляетсяСловом(префикс) {
-			предсказанныеСлова = append(предсказанныеСлова, префикс)
+		слова := Словари.трие.НайтиСловаСПрефиксом(префикс, максПредсказаний)
+		for _, слово := range слова {
+			if !виденные[слово] && len(предсказанныеСлова) < максПредсказаний {
+				виденные[слово] = true
+				предсказанныеСлова = append(предсказанныеСлова, слово)
+			}
 		}
 	}
 
@@ -554,14 +582,13 @@ func ПечатьБуквы(code ВиртуальныйКод, press bool) {
 
 	var direction uint32
 	if !press {
-		direction = 2
+		direction = KEYEVENTF_KEYUP
 	}
-	direction = 2
 	inputs := INPUT{
 		Type: INPUT_KEYBOARD,
 		Ki: KEYBDINPUT{
-			//WVk:         uint16(руна),
-			WScan:       uint16(code),
+			WVk:         uint16(code),
+			WScan:       0,
 			DwFlags:     direction,
 			DwExtraInfo: УказательНаПоток,
 		}}
@@ -585,29 +612,24 @@ func ПечатьТекста(текст string) {
 	// }
 
 	букваДляВывода := utf16.Encode([]rune(текст))
-	// Инфо("ПечатьТекста букваДляВывода %+v \n", букваДляВывода)
 
-	inputs := make([]INPUT, 0, len(букваДляВывода))
+	inputs := make([]INPUT, 0, len(букваДляВывода)*2)
 
 	for _, руна := range букваДляВывода {
-		// Инфо("руна %v", руна)
-
-		// Заполняем структуру правильно
 		inputs = append(inputs, INPUT{
 			Type: INPUT_KEYBOARD,
 			Ki: KEYBDINPUT{
-				//WVk:         uint16(руна),
-				WScan:   uint16(руна),
-				DwFlags: KEYEVENTF_UNICODE,
-
+				WScan:       uint16(руна),
+				DwFlags:     KEYEVENTF_UNICODE,
 				DwExtraInfo: УказательНаПоток,
 			}})
-		// Фокусируем окно перед вводом
-		// установленоАктивноеОкно := активноеОкно.SetForegroundWindow()
-		// Инфо("установленоАктивноеОкно %v", установленоАктивноеОкно)
-
-		// Нажатие клавиши ds
-
+		inputs = append(inputs, INPUT{
+			Type: INPUT_KEYBOARD,
+			Ki: KEYBDINPUT{
+				WScan:       uint16(руна),
+				DwFlags:     KEYEVENTF_UNICODE | KEYEVENTF_KEYUP,
+				DwExtraInfo: УказательНаПоток,
+			}})
 	}
 	рез, _, ош := SendInput.Call(
 		uintptr(uint32(len(inputs))),
@@ -687,6 +709,11 @@ func (окно ПраймОкно) ПриОтображении() {
 		ОсновноеОкноПрограммы.сетка.Разместить()
 		ПозицияОконПриСтарте(ДО)
 
+		// Сохраняем HWND и устанавливаем перехватчик сообщений для обновления предсказаний
+		if HWNDГлавногоОкна == 0 {
+			HWNDГлавногоОкна = ДО
+			оригинальнаяПроцедураГлавногоОкна = ДО.SetWindowLongPtr(co.GWLP_WNDPROC, syscall.NewCallback(новаяПроцедураГлавногоОкна))
+		}
 	})
 
 }
@@ -740,10 +767,11 @@ func ПолучитьПозициюКурсора() (win.POINT, bool) {
 		return точка, false
 	}
 
-	// Координаты в rcCaret уже являются экранными координатами.
-	// Используем левый нижний угол прямоугольника каретки как точку привязки.
+	// RcCaret возвращает координаты в клиентских координатах окна HwndCaret.
+	// Конвертируем их в экранные координаты.
 	точка.X = guiInfo.RcCaret.Left
 	точка.Y = guiInfo.RcCaret.Bottom
+	guiInfo.HwndCaret.ClientToScreenPt(&точка)
 
 	Инфо("ПолучитьПозициюКурсора: Найдена позиция каретки: X=%d, Y=%d", точка.X, точка.Y)
 
@@ -771,16 +799,13 @@ func ПереместитьОкнаКурсору() {
 		if ОсновноеОкноПрограммы != nil {
 			основноеОкно := ОсновноеОкноПрограммы.окно.Hwnd()
 			основноеОкно.SetWindowPos(win.HWND(uintptr(положение)), posX, posY, 0, 0, co.SWP_NOSIZE|co.SWP_ASYNCWINDOWPOS|co.SWP_NOACTIVATE)
+		}
 
-			if ОсновноеОкноПодсказок != nil {
-				окноПодсказок := ОсновноеОкноПодсказок.окно.Hwnd()
-				размерыОсновногоОкна := основноеОкно.GetWindowRect()
-				высотаОсновногоОкна := размерыОсновногоОкна.Bottom - размерыОсновногоОкна.Top
-
-				posXПодсказок := posX
-				posYПодсказок := posY + высотаОсновногоОкна
-				окноПодсказок.SetWindowPos(win.HWND(uintptr(положение)), posXПодсказок, posYПодсказок, 0, 0, co.SWP_NOSIZE|co.SWP_ASYNCWINDOWPOS|co.SWP_NOACTIVATE)
-			}
+		if ОсновноеОкноПодсказок != nil {
+			// Позиционируем окно подсказок справа от основного окна
+			posXПодсказок := posX + 310
+			posYПодсказок := posY
+			ОсновноеОкноПодсказок.hwnd.SetWindowPos(win.HWND(uintptr(положение)), posXПодсказок, posYПодсказок, 0, 0, co.SWP_NOSIZE|co.SWP_ASYNCWINDOWPOS|co.SWP_NOACTIVATE)
 		}
 	}
 }
@@ -812,13 +837,9 @@ func ПозицияОконПриСтарте(ДО win.HWND) {
 
 	// Устанавливаем позицию окна подсказок
 	if ОсновноеОкноПодсказок != nil {
-		окноПодсказок := ОсновноеОкноПодсказок.окно.Hwnd()
-		размерыОсновногоОкна := ДО.GetWindowRect()
-		высотаОсновногоОкна := размерыОсновногоОкна.Bottom - размерыОсновногоОкна.Top
-
-		posXПодсказок := posX
-		posYПодсказок := posY + высотаОсновногоОкна
-		окноПодсказок.SetWindowPos(win.HWND(uintptr(положение)), posXПодсказок, posYПодсказок, 0, 0, co.SWP_SHOWWINDOW|co.SWP_NOSIZE|co.SWP_ASYNCWINDOWPOS|co.SWP_NOACTIVATE)
+		posXПодсказок := posX + 310
+		posYПодсказок := posY
+		ОсновноеОкноПодсказок.hwnd.SetWindowPos(win.HWND(uintptr(положение)), posXПодсказок, posYПодсказок, 0, 0, co.SWP_SHOWWINDOW|co.SWP_NOSIZE|co.SWP_ASYNCWINDOWPOS|co.SWP_NOACTIVATE)
 	}
 }
 
@@ -874,70 +895,100 @@ func (окно ПраймОкно) ИзменениеЦветаКнопок() {
 
 var ОсновноеОкноПодсказок *ОкноПодсказок
 
-func НовоеОкноПодсказок() {
+var (
+	registerClassExW = user32.NewProc("RegisterClassExW")
+	createWindowExW  = user32.NewProc("CreateWindowExW")
+	defWindowProcW   = user32.NewProc("DefWindowProcW")
+	setWindowTextW   = user32.NewProc("SetWindowTextW")
+)
 
-	кисть := win.CreateSolidBrush(win.RGB(63, 39, 81))
+type WNDCLASSEX struct {
+	cbSize        uint32
+	style         uint32
+	lpfnWndProc   uintptr
+	cbClsExtra    int32
+	cbWndExtra    int32
+	hInstance     uintptr
+	hIcon         uintptr
+	hCursor       uintptr
+	hbrBackground uintptr
+	lpszMenuName  *uint16
+	lpszClassName *uint16
+	hIconSm       uintptr
+}
 
-	окно := ui.NewWindowMain(
-		ui.WindowMainOpts().
-			Title("ПотоК").
-			ClientArea(win.SIZE{Cx: 300, Cy: 50}).
-			WndStyles(co.WS_POPUP).
-			WndExStyles(co.WS_EX_TOOLWINDOW | co.WS_EX_NOACTIVATE | co.WS_EX_TOPMOST | co.WS_EX_LAYERED).
-			HBrushBkgnd(кисть),
-	)
-	окно.On().WmShowWindow(func(p wm.ShowWindow) {
-		hwnd := окно.Hwnd()
-		hwnd.SetLayeredWindowAttributes(0, 190, 0x00000002)
-	})
-	// AiCopilot-Code начало: Изменение ОкнаПодсказок для отображения списка
-	// Удаляем старую надпись, так как будем использовать динамические элементы
-	// блокДляПодсказок := ui.NewStatic(окно,
-	// 	ui.StaticOpts().
-	// 		Text("Нажатые клавиши появятся здесь").
-	// 		Position(win.POINT{X: 10, Y: 10}).
-	// 		Size(win.SIZE{Cx: 280, Cy: 30}).
-	// 		CtrlStyles(co.SS_CENTER),
-	// )
+func оконнаяПроцедураПодсказок(hwnd win.HWND, msg uint32, wParam win.WPARAM, lParam win.LPARAM) uintptr {
+	switch msg {
+	case 0x0139: // WM_CTLCOLORSTATIC
+		hdc := win.HDC(wParam)
+		hwndControl := win.HWND(lParam)
 
-	ОсновноеОкноПодсказок = &ОкноПодсказок{
-		окно:            окно,
-		статик:          make(map[string]ui.Static), // Инициализируем карту для статических элементов
-		состояниеКнопок: make(map[ВиртуальныйКод]bool),
-	}
-
-	// Обработчик для изменения цвета статических элементов предсказаний
-	окно.On().WmCtlColorStatic(func(p wm.CtlColor) win.HBRUSH {
-		hdc := p.Hdc()
-		hwndControl := p.HwndControl()
-
-		// Проверяем, является ли текущий контрол одним из наших статических элементов предсказаний
-		for _, staticElem := range ОсновноеОкноПодсказок.статик {
-			if staticElem.Hwnd() == hwndControl {
-				// Если это выбранное предсказание, меняем цвет
-				if len(ТекущиеПредсказания) > 0 && ВыбранноеПредсказаниеИндекс >= 0 && ВыбранноеПредсказаниеИндекс < len(ТекущиеПредсказания) && ОсновноеОкноПодсказок.статик[ТекущиеПредсказания[ВыбранноеПредсказаниеИндекс]].Hwnd() == hwndControl { // AiCopilot-Code начало: Добавлена проверка границ индекса
-					hdc.SetBkColor(win.RGB(255, 0, 123)) // Яркий цвет для выбранного
+		for i, hChild := range ОсновноеОкноПодсказок.дети {
+			if hChild == hwndControl {
+				if i == ВыбранноеПредсказаниеИндекс && i < len(ОсновноеОкноПодсказок.тексты) {
+					hdc.SetBkColor(win.RGB(255, 0, 123))
 					SetTextColor.Call(uintptr(hdc), uintptr(win.RGB(139, 234, 0)))
-					return win.CreateSolidBrush(win.RGB(255, 0, 123))
+					return uintptr(win.CreateSolidBrush(win.RGB(255, 0, 123)))
 				} else {
-					// Обычный цвет для невыбранных предсказаний
 					hdc.SetBkColor(win.RGB(29, 13, 41))
 					SetTextColor.Call(uintptr(hdc), uintptr(win.RGB(255, 255, 255)))
-					return win.CreateSolidBrush(win.RGB(29, 13, 41))
+					return uintptr(win.CreateSolidBrush(win.RGB(29, 13, 41)))
 				}
 			}
 		}
+	}
+	ret, _, _ := defWindowProcW.Call(uintptr(hwnd), uintptr(msg), uintptr(wParam), uintptr(lParam))
+	return ret
+}
 
-		// Для других статических элементов (если есть)
-		hdc.SetBkColor(win.RGB(29, 13, 41))
-		hdc.SetBkMode(co.BKMODE_OPAQUE)
-		SetTextColor.Call(uintptr(hdc), uintptr(win.RGB(255, 255, 255)))
-		кисть := win.CreateSolidBrush(win.RGB(29, 13, 41))
-		return кисть
-	})
+func НовоеОкноПодсказок() {
+	hInst := uintptr(win.GetModuleHandle(win.StrOptNone()))
 
-	СобытиеПеретаскивание(окно)
-	// AiCopilot-Code конец
+	className := syscall.StringToUTF16Ptr("ПотокПодсказки")
+
+	кисть := win.CreateSolidBrush(win.RGB(63, 39, 81))
+
+	wcx := WNDCLASSEX{
+		cbSize:        uint32(unsafe.Sizeof(WNDCLASSEX{})),
+		style:         uint32(co.CS_HREDRAW | co.CS_VREDRAW),
+		lpfnWndProc:   syscall.NewCallback(оконнаяПроцедураПодсказок),
+		hInstance:     hInst,
+		hbrBackground: uintptr(кисть),
+		lpszClassName: className,
+	}
+	registerClassExW.Call(uintptr(unsafe.Pointer(&wcx)))
+
+	hwndRet, _, _ := createWindowExW.Call(
+		uintptr(co.WS_EX_TOOLWINDOW|co.WS_EX_NOACTIVATE|co.WS_EX_TOPMOST|co.WS_EX_LAYERED),
+		uintptr(unsafe.Pointer(className)),
+		uintptr(unsafe.Pointer(syscall.StringToUTF16Ptr("ПотоК"))),
+		uintptr(co.WS_POPUP),
+		0, 0, 300, 50,
+		0, 0, hInst, 0,
+	)
+	hwnd := win.HWND(hwndRet)
+	hwnd.SetLayeredWindowAttributes(0, 190, 0x00000002)
+
+	количество := 20
+	дети := make([]win.HWND, количество)
+	staticClass := syscall.StringToUTF16Ptr("STATIC")
+	for i := 0; i < количество; i++ {
+		hChildRet, _, _ := createWindowExW.Call(
+			0,
+			uintptr(unsafe.Pointer(staticClass)),
+			0,
+			uintptr(co.WS_CHILD|co.WS_VISIBLE|co.WS_BORDER)|uintptr(co.SS_CENTER),
+			uintptr(5), uintptr(int32(5+i*(20+5))), uintptr(290), uintptr(20),
+			uintptr(hwnd), 0, hInst, 0,
+		)
+		дети[i] = win.HWND(hChildRet)
+	}
+
+	ОсновноеОкноПодсказок = &ОкноПодсказок{
+		hwnd:   hwnd,
+		дети:   дети,
+		тексты: make([]string, 0),
+	}
 }
 
 func НовоеОкно() *ПраймОкно {
@@ -1191,6 +1242,7 @@ type СловариСлов struct {
 	английскийСловарь  map[string]bool
 	русскийПрефиксы    map[string]bool
 	английскийПрефиксы map[string]bool
+	трие               *Трие
 }
 
 // НовыеСловариСлов создает новый экземпляр СловариСлов
@@ -1200,6 +1252,7 @@ func НовыеСловариСлов() *СловариСлов {
 		английскийСловарь:  make(map[string]bool),
 		русскийПрефиксы:    make(map[string]bool),
 		английскийПрефиксы: make(map[string]bool),
+		трие:               НовыйТрие(),
 	}
 }
 
@@ -1233,6 +1286,8 @@ func (словари *СловариСлов) загрузитьСловарь(�
 			for i := 1; i <= len(слово); i++ {
 				префиксы[слово[:i]] = true
 			}
+			// Добавляем слово в Trie для поиска по префиксам
+			словари.трие.ДобавитьСлово(слово)
 		}
 	}
 
@@ -1315,38 +1370,32 @@ func (кэш *КэшЧастотностиСлов) ПолучитьЧастот
 
 // ОбновитьПредсказания обновляет отображение предсказанных слов в окне подсказок
 func (окноПодсказок *ОкноПодсказок) ОбновитьПредсказания(предсказания []string, выбранныйИндекс int) {
-	// Удаляем все старые статические элементы
-	for _, staticElem := range окноПодсказок.статик {
-		staticElem.Hwnd().DestroyWindow()
-	}
-	окноПодсказок.статик = make(map[string]ui.Static) // Очищаем карту
+	окноПодсказок.тексты = предсказания
 
-	if len(предсказания) == 0 {
-		окноПодсказок.окно.Hwnd().SetWindowPos(0, 0, 0, 300, 50, co.SWP_NOMOVE|co.SWP_NOZORDER) // Скрываем окно или уменьшаем его
-		return
+	for i, hChild := range окноПодсказок.дети {
+		if i < len(предсказания) {
+			hChild.SetWindowText(предсказания[i])
+			hChild.ShowWindow(co.SW_SHOW)
+			hChild.InvalidateRect(nil, true)
+		} else {
+			hChild.ShowWindow(co.SW_HIDE)
+		}
 	}
 
-	// Пересчитываем размер окна подсказок
-	высотаЭлемента := int32(20) // Высота каждого элемента предсказания
+	высотаЭлемента := int32(20)
 	отступ := int32(5)
-	новаяВысота := int32(len(предсказания))*высотаЭлемента + int32(len(предсказания)+1)*отступ
-	if новаяВысота < 50 { // Минимальная высота
-		новаяВысота = 50
-	}
-	окноПодсказок.окно.Hwnd().SetWindowPos(0, 0, 0, 300, новаяВысота, co.SWP_NOMOVE|co.SWP_NOZORDER)
+	if len(предсказания) == 0 {
+		окноПодсказок.hwnd.SetWindowPos(0, 0, 0, 300, 50, co.SWP_NOMOVE|co.SWP_NOZORDER)
+	} else {
+		новаяВысота := int32(len(предсказания))*высотаЭлемента + int32(len(предсказания)+1)*отступ
+		if новаяВысота < 50 {
+			новаяВысота = 50
+		}
+		окноПодсказок.hwnd.SetWindowPos(0, 0, 0, 300, новаяВысота, co.SWP_NOMOVE|co.SWP_NOZORDER)
 
-	// Создаем новые статические элементы для каждого предсказания
-	for i, слово := range предсказания {
-		y := отступ + int32(i)*(высотаЭлемента+отступ)
-		staticElem := ui.NewStatic(окноПодсказок.окно,
-			ui.StaticOpts().
-				Text(слово).
-				Position(win.POINT{X: отступ, Y: y}).
-				Size(win.SIZE{Cx: 300 - 2*отступ, Cy: высотаЭлемента}).
-				CtrlStyles(co.SS_CENTER),
-		)
-		окноПодсказок.статик[слово] = staticElem
-		// Принудительное перерисовка для обновления цвета
-		staticElem.Hwnd().InvalidateRect(nil, true)
+		for i, hChild := range окноПодсказок.дети[:len(предсказания)] {
+			y := отступ + int32(i)*(высотаЭлемента+отступ)
+			hChild.MoveWindow(отступ, y, 300-2*отступ, высотаЭлемента, true)
+		}
 	}
 }
