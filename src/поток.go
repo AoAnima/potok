@@ -11,6 +11,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync/atomic"
+	"sync"
 	"syscall"
 	"time"
 	"unicode/utf16"
@@ -46,6 +48,8 @@ var (
 	GetForegroundWindow      = user32.NewProc("GetForegroundWindow")
 	GetWindowThreadProcessId = user32.NewProc("GetWindowThreadProcessId")
 	CallWindowProc           = user32.NewProc("CallWindowProcW")
+	GetCursorPos             = user32.NewProc("GetCursorPos")
+	AttachThreadInput        = user32.NewProc("AttachThreadInput")
 )
 
 type ДКУ win.HDC // ДескрипторКонтекстаУстройства
@@ -108,9 +112,10 @@ type ПраймОкно struct {
 }
 
 type ОкноПодсказок struct {
-	hwnd   win.HWND
-	дети   []win.HWND
-	тексты []string
+	hwnd      win.HWND
+	полеСлова win.HWND
+	дети      []win.HWND
+	тексты    []string
 }
 
 type INPUT struct {
@@ -158,43 +163,59 @@ func новаяПроцедураГлавногоОкна(hwnd win.HWND, msg uin
 
 var Алвафит = map[ВиртуальныйКод]Кнопка{
 
-	0x51: {0x51, "0x51", map[string][]string{"en": []string{"E", "T"}, "ру": []string{"И", "Б", "Ы"}}},
-	0x57: {0x57, "0x57", map[string][]string{"en": []string{"A", "O"}, "ру": []string{"В", "Ь", "Ъ"}}},
-	0x45: {0x45, "0x45", map[string][]string{"en": []string{"I", "N"}, "ру": []string{"Д", "Е", "Ё"}}},
-	0x52: {0x52, "0x52", map[string][]string{"en": []string{"S", "H"}, "ру": []string{"Ж", "З", "Н"}}},
-	0x43: {0x43, "0x43", map[string][]string{"en": []string{".", "["}, "ру": []string{".", "["}}},
+	0x51: {0x51, "0x51", map[string][]string{"en": {"E", "T"}, "ру": {"И", "Б", "Ы"}}},
+	0x57: {0x57, "0x57", map[string][]string{"en": {"A", "O"}, "ру": {"В", "Ь", "Ъ"}}},
+	0x45: {0x45, "0x45", map[string][]string{"en": {"I", "N"}, "ру": {"Д", "Е", "Ё"}}},
+	0x52: {0x52, "0x52", map[string][]string{"en": {"S", "H"}, "ру": {"Ж", "З", "Н"}}},
+	0x43: {0x43, "0x43", map[string][]string{"en": {".", "["}, "ру": {".", "["}}},
 
-	// Второй ряд (4 кнопки)
-	0x41: {0x41, "0x41", map[string][]string{"en": []string{"R", "D"}, "ру": []string{"A", "Й"}}},
-	0x53: {0x53, "0x53", map[string][]string{"en": []string{"L", "C"}, "ру": []string{"К", "Л"}}},
-	0x44: {0x44, "0x44", map[string][]string{"en": []string{"U", "M"}, "ру": []string{"М", "П"}}},
-	0x46: {0x46, "0x46", map[string][]string{"en": []string{"W", "F"}, "ру": []string{"О", "Р"}}},
-	0x56: {0x56, "0x56", map[string][]string{"en": []string{"{", "\""}, "ру": []string{"{", "\""}}},
+	0x41: {0x41, "0x41", map[string][]string{"en": {"R", "D"}, "ру": {"A", "Й"}}},
+	0x53: {0x53, "0x53", map[string][]string{"en": {"L", "C"}, "ру": {"К", "Л"}}},
+	0x44: {0x44, "0x44", map[string][]string{"en": {"U", "M"}, "ру": {"М", "П"}}},
+	0x46: {0x46, "0x46", map[string][]string{"en": {"W", "F"}, "ру": {"О", "Р"}}},
+	0x56: {0x56, "0x56", map[string][]string{"en": {"{", "\""}, "ру": {"{", "\""}}},
 
-	// Третий ряд (4 кнопки)
-	0x5A: {0x5A, "0x5A", map[string][]string{"en": []string{"G", "Y"}, "ру": []string{"Ф", "Х", "Э", "Ю"}}},
-	0x58: {0x58, "0x58", map[string][]string{"en": []string{"P", "B"}, "ру": []string{"Ц", "Ч", "Ш", "Щ"}}},
-	0x54: {0x54, "0x54", map[string][]string{"en": []string{"V", "K"}, "ру": []string{"Р", "С"}}},
-	0x47: {0x47, "0x47", map[string][]string{"en": []string{"J", "X", "Q", "Z"}, "ру": []string{"Т", "У"}}},
+	0x5A: {0x5A, "0x5A", map[string][]string{"en": {"G", "Y"}, "ру": {"Ф", "Х", "Э", "Ю"}}},
+	0x58: {0x58, "0x58", map[string][]string{"en": {"P", "B"}, "ру": {"Ц", "Ч", "Ш", "Щ"}}},
+	0x54: {0x54, "0x54", map[string][]string{"en": {"V", "K"}, "ру": {"Р", "С"}}},
+	0x47: {0x47, "0x47", map[string][]string{"en": {"J", "X", "Q", "Z"}, "ру": {"Т", "У"}}},
 }
 
 var Клавиатура = []ВиртуальныйКод{
-	0x51,
-	0x57,
-	0x45,
-	0x52,
-	0x43,
+	0x51, 0x57, 0x45, 0x52, 0x43,
+	0x41, 0x53, 0x44, 0x46, 0x56,
+	0x5A, 0x58, 0x54, 0x47,
+}
 
-	0x41,
-	0x53,
-	0x44,
-	0x46,
-	0x56,
+type Макрос struct {
+	Имя      string
+	Клавиши  []ВиртуальныйКод
+	Действие func()
+}
 
-	0x5A,
-	0x58,
-	0x54,
-	0x47,
+var Макросы = []Макрос{
+	{
+		Имя:     "Отменить (Z+Y → Ctrl+Z)",
+		Клавиши: []ВиртуальныйКод{0x5A, 0x59}, // Z + Y
+		Действие: func() {
+			Инфо("Макрос: Отменить (Z+Y → Ctrl+Z)")
+			времяНажатияMu.Lock()
+			delete(времяНажатия, 0x5A)
+			delete(времяНажатия, 0x59)
+			времяНажатияMu.Unlock()
+			inputs := []INPUT{
+				{Type: INPUT_KEYBOARD, Ki: KEYBDINPUT{WVk: uint16(0xA2), DwExtraInfo: УказательНаПоток}},                           // Ctrl down
+				{Type: INPUT_KEYBOARD, Ki: KEYBDINPUT{WVk: uint16(0x5A), DwExtraInfo: УказательНаПоток}},                           // Z down
+				{Type: INPUT_KEYBOARD, Ki: KEYBDINPUT{WVk: uint16(0x5A), DwFlags: KEYEVENTF_KEYUP, DwExtraInfo: УказательНаПоток}}, // Z up
+				{Type: INPUT_KEYBOARD, Ki: KEYBDINPUT{WVk: uint16(0xA2), DwFlags: KEYEVENTF_KEYUP, DwExtraInfo: УказательНаПоток}}, // Ctrl up
+			}
+			SendInput.Call(
+				uintptr(uint32(len(inputs))),
+				uintptr(unsafe.Pointer(&inputs[0])),
+				uintptr(int32(unsafe.Sizeof(inputs[0]))),
+			)
+		},
+	},
 }
 
 // Канал для обновления UI
@@ -215,6 +236,183 @@ var ВыбранноеПредсказаниеИндекс int    // AiCopilot-C
 var путьКДанным = "data"
 var HWNDГлавногоОкна win.HWND // HWND главного окна (устанавливается после создания)
 
+type НажатиеJSON struct {
+	VK ВиртуальныйКод `json:"vk"`
+	Up bool           `json:"up"`
+}
+
+type КлавишаJSON struct {
+	VK    ВиртуальныйКод `json:"vk"`
+	Label string         `json:"label"`
+	Ru    []string       `json:"ru"`
+	En    []string       `json:"en"`
+}
+
+type МакросJSON struct {
+	Name  string           `json:"name"`
+	Chord []ВиртуальныйКод `json:"chord"`
+	Send  []НажатиеJSON    `json:"send"`
+}
+
+func ЗагрузитьРаскладкуИзJSON(путь string) {
+	данные, err := os.ReadFile(путь)
+	if err != nil {
+		return // нет файла — остаётся жёсткая раскладка
+	}
+	var raw struct {
+		Keys []КлавишаJSON `json:"keys"`
+	}
+	if err := json.Unmarshal(данные, &raw); err != nil {
+		ВыводОшибки("ошибка парсинга JSON раскладки: %v", err)
+		return
+	}
+	if len(raw.Keys) == 0 {
+		return
+	}
+	новаяРаскладка := make(map[ВиртуальныйКод]Кнопка)
+	новаяКлавиатура := make([]ВиртуальныйКод, 0, len(raw.Keys))
+	for _, к := range raw.Keys {
+		буквы := map[string][]string{"en": к.En, "ру": к.Ru}
+		новаяРаскладка[к.VK] = Кнопка{
+			код:        к.VK,
+			строкаКода: к.Label,
+			буквы:      буквы,
+		}
+		новаяКлавиатура = append(новаяКлавиатура, к.VK)
+	}
+	Алвафит = новаяРаскладка
+	Клавиатура = новаяКлавиатура
+	Инфо("Загружено клавиш из JSON: %d", len(raw.Keys))
+}
+
+func ЗагрузитьМакросыИзJSON(путь string) {
+	данные, err := os.ReadFile(путь)
+	if err != nil {
+		return // нет файла — не беда
+	}
+	var raw struct {
+		Macros []МакросJSON `json:"macros"`
+	}
+	if err := json.Unmarshal(данные, &raw); err != nil {
+		ВыводОшибки("ошибка парсинга JSON макросов: %v", err)
+		return
+	}
+	if len(raw.Macros) == 0 {
+		return
+	}
+	Макросы = nil
+	for _, м := range raw.Macros {
+		if len(м.Chord) < 2 || len(м.Send) == 0 {
+			continue
+		}
+		sendInputs := make([]INPUT, 0, len(м.Send))
+		for _, н := range м.Send {
+			флаги := uint32(0)
+			if н.Up {
+				флаги = KEYEVENTF_KEYUP
+			}
+			sendInputs = append(sendInputs, INPUT{
+				Type: INPUT_KEYBOARD,
+				Ki: KEYBDINPUT{
+					WVk:         uint16(н.VK),
+					DwFlags:     флаги,
+					DwExtraInfo: УказательНаПоток,
+				},
+			})
+		}
+		макрос := Макрос{
+			Имя:     м.Name,
+			Клавиши: м.Chord,
+			Действие: func(chord []ВиртуальныйКод, inputs []INPUT) func() {
+				localChord := make([]ВиртуальныйКод, len(chord))
+				copy(localChord, chord)
+				return func() {
+					Инфо("Макрос: %s", м.Name)
+					времяНажатияMu.Lock()
+					for _, код := range localChord {
+						delete(времяНажатия, код)
+					}
+					времяНажатияMu.Unlock()
+					SendInput.Call(
+						uintptr(uint32(len(inputs))),
+						uintptr(unsafe.Pointer(&inputs[0])),
+						uintptr(int32(unsafe.Sizeof(inputs[0]))),
+					)
+				}
+			}(м.Chord, sendInputs),
+		}
+		Макросы = append(Макросы, макрос)
+	}
+	Инфо("Загружено макросов из JSON: %d", len(raw.Macros))
+}
+
+func ПолучитьПозициюКурсора() (win.POINT, bool) {
+	var точка win.POINT
+
+	// Стратегия 1: GetGUIThreadInfo (не требует AttachThreadInput, работает на Win7+)
+	потокID, _, _ := GetWindowThreadProcessId.Call(uintptr(win.GetForegroundWindow()), 0)
+	if потокID != 0 {
+		var guiInfo GUITHREADINFO
+		guiInfo.CbSize = uint32(unsafe.Sizeof(guiInfo))
+		успех, _, _ := GetGUIThreadInfo.Call(потокID, uintptr(unsafe.Pointer(&guiInfo)))
+		if успех != 0 && guiInfo.HwndCaret != 0 {
+			точка.X = guiInfo.RcCaret.Left
+			точка.Y = guiInfo.RcCaret.Bottom
+			guiInfo.HwndCaret.ClientToScreenPt(&точка)
+			if точка.X != 0 || точка.Y != 0 {
+				return точка, true
+			}
+		}
+	}
+
+	// Стратегия 2: AttachThreadInput + GetCaretPos
+	активноеОкно := win.GetForegroundWindow()
+	if активноеОкно != 0 {
+		_, активныйПоток := активноеОкно.GetWindowThreadProcessId()
+		текущийПоток := win.GetCurrentThreadId()
+		присоединено := false
+		if активныйПоток != текущийПоток {
+			ret, _, _ := AttachThreadInput.Call(uintptr(текущийПоток), uintptr(активныйПоток), 1)
+			присоединено = ret != 0
+		}
+		позицияКаретки := win.GetCaretPos()
+		if присоединено {
+			AttachThreadInput.Call(uintptr(текущийПоток), uintptr(активныйПоток), 0)
+		}
+		if позицияКаретки.Left != 0 || позицияКаретки.Top != 0 {
+			активноеОкно.ClientToScreenRc(&позицияКаретки)
+			точка.X = позицияКаретки.Left
+			точка.Y = позицияКаретки.Top
+			return точка, true
+		}
+	}
+
+	// Стратегия 3: GetCursorPos (позиция мыши, срабатывает всегда)
+	var курсорPos win.POINT
+	ret, _, _ := GetCursorPos.Call(uintptr(unsafe.Pointer(&курсорPos)))
+	if ret != 0 {
+		return курсорPos, true
+	}
+
+	return точка, false
+}
+
+type RECT struct {
+	Left, Top, Right, Bottom int32
+}
+
+type GUITHREADINFO struct {
+	CbSize        uint32
+	Flags         uint32
+	HwndActive    win.HWND
+	HwndFocus     win.HWND
+	HwndCapture   win.HWND
+	HwndMenuOwner win.HWND
+	HwndMoveSize  win.HWND
+	HwndCaret     win.HWND
+	RcCaret       RECT
+}
+
 func main() {
 	exe, err := os.Executable()
 	if err == nil {
@@ -225,6 +423,7 @@ func main() {
 	}()
 	runtime.LockOSThread()
 	ХукКлавиатуры()
+	ХукМыши()
 	// AiCopilot-Code начало: Инициализация словарей и кэша частотности
 	КэшЧастотности = НовыиКэшЧастотностиСлов()
 	статусЗагрузкиКэша := КэшЧастотности.ЗагрузитьКэш(filepath.Join(путьКДанным, "frequency_cache.json"))
@@ -245,6 +444,10 @@ func main() {
 		ВыводОшибки("Ошибка загрузки пользовательского словаря: %s", статусПользовательскогоСловаря.Текст)
 	}
 	// AiCopilot-Code конец
+
+	// Загружаем раскладку и макросы из JSON (если есть)
+	ЗагрузитьРаскладкуИзJSON(filepath.Join(путьКДанным, "layout.json"))
+	ЗагрузитьМакросыИзJSON(filepath.Join(путьКДанным, "layout.json"))
 
 	ОсновноеОкноПрограммы = НовоеОкно()
 
@@ -274,11 +477,14 @@ func main() {
 }
 
 var зажатаяКлавиша = make(map[ВиртуальныйКод]bool)
+var времяНажатияMu sync.Mutex
 var времяНажатия = make(map[ВиртуальныйКод]time.Time)
 var клавишиВнизу = make(map[ВиртуальныйКод]bool)
 var режимВвода = 0 // 0 = T9, 1 = Multi-tap
 var последнийВывод strings.Builder
 var новыеСлова []string
+var макроЗаблокированы = make(map[ВиртуальныйКод]bool)
+var длинаБуфера int32 // атомарно обновляется из БайферНажатий для хука
 
 func отследитьВывод(текст string) {
 	последнийВывод.WriteString(текст)
@@ -317,6 +523,53 @@ func ХукКлавиатуры() {
 				клавишиВнизу[структураКлавиатуры.ВиртуальныйКод] = false
 			}
 
+			// Пропускаем KEYUP для клавиш, которые были частью сработавшего макроса
+			if типСобытия == win.WPARAM(co.WM_KEYUP) {
+				if макроЗаблокированы[структураКлавиатуры.ВиртуальныйКод] {
+					delete(макроЗаблокированы, структураКлавиатуры.ВиртуальныйКод)
+					ret, _, _ := СледующийХук.Call(0, uintptr(код), uintptr(типСобытия), uintptr(структураКлавишы))
+					return ret
+				}
+			}
+
+			// Проверка макросов (аккордов)
+			if типСобытия == win.WPARAM(co.WM_KEYDOWN) {
+				for _, макрос := range Макросы {
+					if len(макрос.Клавиши) < 2 {
+						continue
+					}
+					последняя := макрос.Клавиши[len(макрос.Клавиши)-1]
+					if структураКлавиатуры.ВиртуальныйКод == последняя {
+						всеЗажаты := true
+						for _, код := range макрос.Клавиши[:len(макрос.Клавиши)-1] {
+							if !клавишиВнизу[код] {
+								всеЗажаты = false
+								break
+							}
+						}
+						if всеЗажаты {
+							Инфо("Аккорд сработал: %s", макрос.Имя)
+
+							// Блокируем KEYUP для всех клавиш аккорда
+							// (чтобы не попали в буфер нажатий через канал)
+							for _, код := range макрос.Клавиши {
+								макроЗаблокированы[код] = true
+							}
+
+							// Очищаем времяНажатия чтобы isHeld не сработал на KEYUP
+							времяНажатияMu.Lock()
+							for _, код := range макрос.Клавиши {
+								delete(времяНажатия, код)
+							}
+							времяНажатияMu.Unlock()
+
+							макрос.Действие()
+							return 1
+						}
+					}
+				}
+			}
+
 			каналОбновленияОкна <- ДанныеКлавиатурногоСобытия{
 				*структураКлавиатуры,
 				типСобытия,
@@ -325,9 +578,13 @@ func ХукКлавиатуры() {
 
 			// Блокируем от попадания в активное окно:
 			if len(ТекущиеПредсказания) > 0 {
-				// Пробел, стрелки, PageUp/PageDown — блокируем чтобы не уходили в окно
-				if структураКлавиатуры.ВиртуальныйКод == 0x20 ||
-					структураКлавиатуры.ВиртуальныйКод == 0x21 || // PageUp
+				// Пробел — блокируем только когда в буфере >1 буква
+				// (1 буква + пробел = просто буква + пробел, без подмены)
+				if структураКлавиатуры.ВиртуальныйКод == 0x20 && atomic.LoadInt32(&длинаБуфера) > 1 {
+					return 1
+				}
+				// Стрелки, PageUp/PageDown — блокируем для навигации
+				if структураКлавиатуры.ВиртуальныйКод == 0x21 || // PageUp
 					структураКлавиатуры.ВиртуальныйКод == 0x22 || // PageDown
 					структураКлавиатуры.ВиртуальныйКод == 0x26 || // Up
 					структураКлавиатуры.ВиртуальныйКод == 0x28 { // Down
@@ -347,6 +604,23 @@ func ХукКлавиатуры() {
 		// return 1
 	}, 0, 0)
 
+}
+
+var времяПоследнегоДвиженияМыши time.Time
+
+func ХукМыши() {
+	win.SetWindowsHookEx(co.WH_MOUSE_LL, func(код int32, типСобытия win.WPARAM, структураМыши win.LPARAM) uintptr {
+		if код >= 0 && типСобытия == win.WPARAM(0x0200) { // WM_MOUSEMOVE
+			if time.Since(времяПоследнегоДвиженияМыши) > 30*time.Millisecond {
+				времяПоследнегоДвиженияМыши = time.Now()
+				if ОсновноеОкноПрограммы != nil && ОсновноеОкноПодсказок != nil {
+					ПереместитьОкнаКурсору()
+				}
+			}
+		}
+		ret, _, _ := СледующийХук.Call(0, uintptr(код), uintptr(типСобытия), uintptr(структураМыши))
+		return ret
+	}, 0, 0)
 }
 
 func ПотокОбновленияЮИ() {
@@ -433,7 +707,9 @@ func БуферНажатий(СобытиеКлавиатуры *ДанныеК
 	if СобытиеКлавиатуры.ТипСобытия == win.WPARAM(co.WM_KEYDOWN) && ЗажатаяКлавиша[true] != СобытиеКлавиатуры.ВиртуальныйКод {
 		// Сохраним клавишу которая была нажата в качестве зажатой
 		ЗажатаяКлавиша[true] = СобытиеКлавиатуры.ВиртуальныйКод
+		времяНажатияMu.Lock()
 		времяНажатия[СобытиеКлавиатуры.ВиртуальныйКод] = time.Now()
+		времяНажатияMu.Unlock()
 
 		switch co.VK(СобытиеКлавиатуры.ВиртуальныйКод) {
 		case co.VK_SPACE:
@@ -464,7 +740,7 @@ func БуферНажатий(СобытиеКлавиатуры *ДанныеК
 	}
 
 	if СобытиеКлавиатуры.ТипСобытия == win.WPARAM(co.WM_KEYUP) {
-		// ЗажатаяКлавиша[true] = 0
+		ЗажатаяКлавиша[true] = 0
 		var ЗажатМодификатор uint16
 		// Если следующий код отличается от послднего зажатого то получим в каком сотоянии находится зажатая клавиша
 		if ЗажатаяКлавиша[true] > 0 && ЗажатаяКлавиша[true] != СобытиеКлавиатуры.ВиртуальныйКод {
@@ -474,7 +750,7 @@ func БуферНажатий(СобытиеКлавиатуры *ДанныеК
 
 		switch co.VK(СобытиеКлавиатуры.ВиртуальныйКод) {
 		case co.VK_SPACE: // AiCopilot-Code начало: Обработка пробела
-			if len(ТекущиеПредсказания) > 0 {
+			if len(ТекущиеПредсказания) > 0 && len(Буфер.ТекущееСлово) > 1 {
 				словоДляВставки := ТекущиеПредсказания[ВыбранноеПредсказаниеИндекс]
 				// Удаляем набранные символы
 				количествоУдаляемыхСимволов := len(Буфер.ТекущееСлово)
@@ -496,6 +772,7 @@ func БуферНажатий(СобытиеКлавиатуры *ДанныеК
 			}
 			Буфер.ТекущееСлово = []ВиртуальныйКод{}
 			Буфер.индексыБукв = []int{}
+			atomic.StoreInt32(&длинаБуфера, 0)
 			ТекущиеПредсказания = []string{}
 			ВыбранноеПредсказаниеИндекс = 0
 			if HWNDГлавногоОкна != 0 {
@@ -525,6 +802,7 @@ func БуферНажатий(СобытиеКлавиатуры *ДанныеК
 			if len(Буфер.ТекущееСлово) > 0 {
 				Буфер.ТекущееСлово = Буфер.ТекущееСлово[:len(Буфер.ТекущееСлово)-1]
 				Буфер.индексыБукв = Буфер.индексыБукв[:len(Буфер.индексыБукв)-1]
+				atomic.StoreInt32(&длинаБуфера, int32(len(Буфер.ТекущееСлово)))
 				каналПредсказания <- ДанныеДляПредсказания{коды: Буфер.ТекущееСлово, индексы: Буфер.индексыБукв}
 			} else {
 				// Если буфер пуст, очищаем предсказания
@@ -568,11 +846,7 @@ func БуферНажатий(СобытиеКлавиатуры *ДанныеК
 					HWNDГлавногоОкна.SendMessage(WM_UPDATE_PREDICTIONS, 0, 0)
 				}
 			}
-		default: // AiCopilot-Code конец: Обработка остальных клавиш
-			// AiCopilot-Code начало
-			// Перемещаем окна к позиции курсора при каждом нажатии
-			ПереместитьОкнаКурсору()
-			// AiCopilot-Code конец
+		default: // Обработка остальных клавиш
 			Инфо("ЗажатМодификатор 2%+v \n", ВиртуальныйКод(ЗажатМодификатор))
 			Инфо("СобытиеКлавиатуры.ВиртуальныйКод %+v \n", СобытиеКлавиатуры.ВиртуальныйКод)
 
@@ -581,7 +855,13 @@ func БуферНажатий(СобытиеКлавиатуры *ДанныеК
 				break // не обрабатываем клавиши не из Алвафит
 			}
 
-			isHeld := time.Since(времяНажатия[СобытиеКлавиатуры.ВиртуальныйКод]) > 150*time.Millisecond
+			времяНажатияMu.Lock()
+			время, существует := времяНажатия[СобытиеКлавиатуры.ВиртуальныйКод]
+			времяНажатияMu.Unlock()
+			var isHeld bool
+			if существует {
+				isHeld = time.Since(время) > 150*time.Millisecond
+			}
 
 			// Multi-tap: если та же клавиша, что и последняя — циклически переключаем букву
 			if режимВвода == 1 && len(Буфер.ТекущееСлово) > 0 && СобытиеКлавиатуры.ВиртуальныйКод == Буфер.ТекущееСлово[len(Буфер.ТекущееСлово)-1] {
@@ -603,6 +883,7 @@ func БуферНажатий(СобытиеКлавиатуры *ДанныеК
 				// Новая клавиша (или T9 режим)
 				Буфер.ТекущееСлово = append(Буфер.ТекущееСлово, СобытиеКлавиатуры.ВиртуальныйКод)
 				Буфер.индексыБукв = append(Буфер.индексыБукв, 0)
+				atomic.StoreInt32(&длинаБуфера, int32(len(Буфер.ТекущееСлово)))
 
 				if кнопка, ок := Алвафит[СобытиеКлавиатуры.ВиртуальныйКод]; ок && isHeld {
 					// Зажали >150мс — заглавная буква + CamelCase
@@ -626,6 +907,30 @@ func БуферНажатий(СобытиеКлавиатуры *ДанныеК
 			каналПредсказания <- ДанныеДляПредсказания{коды: Буфер.ТекущееСлово, индексы: Буфер.индексыБукв}
 		}
 	}
+}
+
+func ТекущийТекст() string {
+	if len(Буфер.ТекущееСлово) == 0 {
+		return ""
+	}
+	var результат strings.Builder
+	for i, код := range Буфер.ТекущееСлово {
+		if кнопка, ок := Алвафит[код]; ок {
+			всеБуквы := append([]string{}, кнопка.буквы["ру"]...)
+			всеБуквы = append(всеБуквы, кнопка.буквы["en"]...)
+			if len(всеБуквы) > 0 {
+				индекс := 0
+				if режимВвода == 1 && i < len(Буфер.индексыБукв) {
+					индекс = Буфер.индексыБукв[i]
+					if индекс >= len(всеБуквы) {
+						индекс = len(всеБуквы) - 1
+					}
+				}
+				результат.WriteString(strings.ToLower(всеБуквы[индекс]))
+			}
+		}
+	}
+	return результат.String()
 }
 
 // AiCopilot-Code начало: Реализация алгоритма предсказания слов
@@ -923,72 +1228,6 @@ func (окно ПраймОкно) ПриОтображении() {
 }
 
 // AiCopilot-Code начало
-// RECT определяет прямоугольник по координатам его верхнего левого и нижнего правого углов.
-type RECT struct {
-	Left, Top, Right, Bottom int32
-}
-
-// GUITHREADINFO содержит информацию о потоке графического интерфейса.
-type GUITHREADINFO struct {
-	CbSize        uint32
-	Flags         uint32
-	HwndActive    win.HWND
-	HwndFocus     win.HWND
-	HwndCapture   win.HWND
-	HwndMenuOwner win.HWND
-	HwndMoveSize  win.HWND
-	HwndCaret     win.HWND
-	RcCaret       RECT
-}
-
-// ПолучитьПозициюКурсора находит позицию системного текстового курсора (каретки) с помощью GetGUIThreadInfo.
-// Этот метод более надежен, чем AttachThreadInput+GetCaretPos, так как он не требует "присоединения"
-// к другому потоку и лучше работает с разными уровнями прав доступа приложений.
-func ПолучитьПозициюКурсора() (win.POINT, bool) {
-	var точка win.POINT
-
-	// Получаем ID потока для активного в данный момент окна.
-	потокID, _, _ := GetWindowThreadProcessId.Call(uintptr(win.GetForegroundWindow()), 0)
-	if потокID == 0 {
-		Инфо("ПолучитьПозициюКурсора: Не удалось получить ID потока активного окна.")
-		return точка, false
-	}
-
-	var guiInfo GUITHREADINFO
-	guiInfo.CbSize = uint32(unsafe.Sizeof(guiInfo))
-
-	// Запрашиваем информацию о потоке GUI.
-	успех, _, err := GetGUIThreadInfo.Call(потокID, uintptr(unsafe.Pointer(&guiInfo)))
-	if успех == 0 {
-		Инфо("ПолучитьПозициюКурсора: GetGUIThreadInfo не удалось. Ошибка: %v", err)
-		return точка, false
-	}
-
-	// Проверяем, есть ли у потока видимая каретка.
-	// rcCaret будет (0,0,0,0) если каретки нет.
-	if guiInfo.HwndCaret == 0 {
-		Инфо("ПолучитьПозициюКурсора: Каретка не найдена (HwndCaret is null).")
-		return точка, false
-	}
-
-	// RcCaret возвращает координаты в клиентских координатах окна HwndCaret.
-	// Конвертируем их в экранные координаты.
-	точка.X = guiInfo.RcCaret.Left
-	точка.Y = guiInfo.RcCaret.Bottom
-	guiInfo.HwndCaret.ClientToScreenPt(&точка)
-
-	Инфо("ПолучитьПозициюКурсора: Найдена позиция каретки: X=%d, Y=%d", точка.X, точка.Y)
-
-	// Дополнительная проверка: если координаты нулевые, возможно, каретка просто скрыта.
-	if точка.X == 0 && точка.Y == 0 {
-		Инфо("ПолучитьПозициюКурсора: Позиция каретки (0,0), возможно, она скрыта.")
-		return точка, false
-	}
-
-	return точка, true
-}
-
-// AiCopilot-Code конец
 
 // AiCopilot-Code начало
 // ПереместитьОкнаКурсору перемещает оба окна (основное и подсказок) к текущей позиции текстового курсора.
@@ -1127,6 +1366,13 @@ func оконнаяПроцедураПодсказок(hwnd win.HWND, msg uint3
 		hdc := win.HDC(wParam)
 		hwndControl := win.HWND(lParam)
 
+		// Поле текущего слова — отдельный стиль
+		if hwndControl == ОсновноеОкноПодсказок.полеСлова {
+			hdc.SetBkColor(win.RGB(40, 20, 60))
+			SetTextColor.Call(uintptr(hdc), uintptr(win.RGB(0, 200, 0)))
+			return uintptr(win.CreateSolidBrush(win.RGB(40, 20, 60)))
+		}
+
 		for i, hChild := range ОсновноеОкноПодсказок.дети {
 			if hChild == hwndControl {
 				if i == ВыбранноеПредсказаниеИндекс && i < len(ОсновноеОкноПодсказок.тексты) {
@@ -1174,24 +1420,38 @@ func НовоеОкноПодсказок() {
 	hwnd.SetLayeredWindowAttributes(0, 190, 0x00000002)
 
 	количество := 20
-	дети := make([]win.HWND, количество)
 	staticClass := syscall.StringToUTF16Ptr("STATIC")
+
+	// Поле текущего слова/выбранной подсказки
+	hFieldRet, _, _ := createWindowExW.Call(
+		0,
+		uintptr(unsafe.Pointer(staticClass)),
+		uintptr(unsafe.Pointer(syscall.StringToUTF16Ptr(""))),
+		uintptr(co.WS_CHILD|co.WS_VISIBLE|co.WS_BORDER)|uintptr(co.SS_CENTER),
+		uintptr(5), uintptr(5), uintptr(290), uintptr(25),
+		uintptr(hwnd), 0, hInst, 0,
+	)
+	полеСлова := win.HWND(hFieldRet)
+
+	дети := make([]win.HWND, количество)
 	for i := 0; i < количество; i++ {
+		y := 5 + 25 + 5 + int32(i)*(20+5)
 		hChildRet, _, _ := createWindowExW.Call(
 			0,
 			uintptr(unsafe.Pointer(staticClass)),
 			0,
 			uintptr(co.WS_CHILD|co.WS_VISIBLE|co.WS_BORDER)|uintptr(co.SS_CENTER),
-			uintptr(5), uintptr(int32(5+i*(20+5))), uintptr(290), uintptr(20),
+			uintptr(5), uintptr(y), uintptr(290), uintptr(20),
 			uintptr(hwnd), 0, hInst, 0,
 		)
 		дети[i] = win.HWND(hChildRet)
 	}
 
 	ОсновноеОкноПодсказок = &ОкноПодсказок{
-		hwnd:   hwnd,
-		дети:   дети,
-		тексты: make([]string, 0),
+		hwnd:      hwnd,
+		полеСлова: полеСлова,
+		дети:      дети,
+		тексты:    make([]string, 0),
 	}
 }
 
@@ -1647,29 +1907,47 @@ func (кэш *КэшЧастотностиСлов) ПолучитьЧастот
 func (окноПодсказок *ОкноПодсказок) ОбновитьПредсказания(предсказания []string, выбранныйИндекс int) {
 	окноПодсказок.тексты = предсказания
 
+	// Обновляем поле текущего слова / выбранной подсказки
+	if len(предсказания) > 0 && выбранныйИндекс >= 0 && выбранныйИндекс < len(предсказания) {
+		окноПодсказок.полеСлова.SetWindowText("→ " + предсказания[выбранныйИндекс])
+	} else {
+		текст := ТекущийТекст()
+		if текст != "" {
+			окноПодсказок.полеСлова.SetWindowText(текст)
+		} else {
+			окноПодсказок.полеСлова.SetWindowText("")
+		}
+	}
+
 	for i, hChild := range окноПодсказок.дети {
 		if i < len(предсказания) {
 			hChild.SetWindowText(предсказания[i])
 			hChild.ShowWindow(co.SW_SHOW)
-			hChild.InvalidateRect(nil, true)
 		} else {
 			hChild.ShowWindow(co.SW_HIDE)
 		}
 	}
 
+	// Форсируем полную перерисовку окна подсказок, чтобы WM_CTLCOLORSTATIC
+	// дошёл до родителя и подсветка (выбранныйИндекс) применилась
+	окноПодсказок.hwnd.InvalidateRect(nil, true)
+	окноПодсказок.hwnd.UpdateWindow()
+
 	высотаЭлемента := int32(20)
+	высотаПоля := int32(25)
 	отступ := int32(5)
 	if len(предсказания) == 0 {
-		окноПодсказок.hwnd.SetWindowPos(0, 0, 0, 300, 50, co.SWP_NOMOVE|co.SWP_NOZORDER)
+		окноПодсказок.hwnd.SetWindowPos(0, 0, 0, 300, высотаПоля+отступ*2, co.SWP_NOMOVE|co.SWP_NOZORDER)
 	} else {
-		новаяВысота := int32(len(предсказания))*высотаЭлемента + int32(len(предсказания)+1)*отступ
-		if новаяВысота < 50 {
-			новаяВысота = 50
+		новаяВысота := высотаПоля + отступ + int32(len(предсказания))*высотаЭлемента + int32(len(предсказания)+1)*отступ
+		if новаяВысота < высотаПоля+отступ*2 {
+			новаяВысота = высотаПоля + отступ*2
 		}
 		окноПодсказок.hwnd.SetWindowPos(0, 0, 0, 300, новаяВысота, co.SWP_NOMOVE|co.SWP_NOZORDER)
 
+		// Поле слова остаётся на месте (y=5), сдвигаем предсказания
 		for i, hChild := range окноПодсказок.дети[:len(предсказания)] {
-			y := отступ + int32(i)*(высотаЭлемента+отступ)
+			y := высотаПоля + отступ*2 + int32(i)*(высотаЭлемента+отступ)
 			hChild.MoveWindow(отступ, y, 300-2*отступ, высотаЭлемента, true)
 		}
 	}
