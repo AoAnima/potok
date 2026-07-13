@@ -11,12 +11,13 @@ import (
 	"unsafe"
 
 	. "aoanima.ru/Logger"
-
+фыявйч
 	"github.com/rodrigocfd/windigo/ui"
 	"github.com/rodrigocfd/windigo/ui/wm"
 	"github.com/rodrigocfd/windigo/win"
 	"github.com/rodrigocfd/windigo/win/co"
-)
+)cache-control
+привет cache-control
 var (
 	user32   = syscall.NewLazyDLL("user32.dll")
 	gdi32    = syscall.NewLazyDLL("gdi32.dll")
@@ -33,7 +34,9 @@ var (
 	GetCaretPos       = user32.NewProc("GetCaretPos")
 	SendInput         = user32.NewProc("SendInput")
 	AttachThreadInput = user32.NewProc("AttachThreadInput")
-)
+кaк д
+
+1
 
 // func вводБуквы(буква string) {
 // 	// Создаем массив для хранения Unicode символов

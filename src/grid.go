@@ -1,4 +1,4 @@
-package main
+//package main
 
 /*
 сетка окна приложения может описываться json
